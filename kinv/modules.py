@@ -1,10 +1,10 @@
 from datetime import datetime
 from typing import Dict, List, Literal
-from pydantic import BaseModel, ConfigDict, DirectoryPath, FilePath
-import questionary as qy
-import pandas as pd
 
+import pandas as pd
+import questionary as qy
 from configs import Settings
+from pydantic import BaseModel, ConfigDict, DirectoryPath, FilePath
 from rich.console import Console
 from rich.table import Table
 
@@ -21,16 +21,17 @@ class Item(BaseModel):
 
     @classmethod
     def create_item_cli(cls) -> "Item":
-        conf = Settings.from_config_file().model_dump()
+        config = Settings.from_config_file()
+        conf = config.model_dump()  # better caching
         item_info = qy.form(
             name=qy.text("Enter Item Name: "),
-            price=qy.text(f"Enter its Price: {conf["currency_symbol"]} "),
+            price=qy.text(f"Enter its Price: {conf['currency_symbol']} "),
             quantity=qy.text("Enter the quantity (in numbers)"),
             quantity_unit=qy.text(
                 "Enter the unit which of quantity (`Kg`, `g`, `nos`, `L`, `ml`)",
                 default="nos",
             ),
-            expiry_date=qy.text(f"Expiry date: format-`{conf["date_format"]}`"),
+            expiry_date=qy.text(f"Expiry date: format-`{conf['date_format']}`"),
         ).ask()
 
         return cls(
@@ -55,9 +56,9 @@ class Item(BaseModel):
     def price_str(self) -> str:
         conf = Settings.from_config_file().model_dump()
         if conf["currency_after"]:
-            return f"{self.price}{conf["currency_symbol"]}"
+            return f"{self.price}{conf['currency_symbol']}"
         else:
-            return f"{conf["currency_symbol"]}{self.price}"
+            return f"{conf['currency_symbol']}{self.price}"
 
     def csv_entry(self) -> Dict:
         return self.model_dump()
@@ -132,8 +133,13 @@ class CSVBackend(BaseModel):
     def new_entry(self, item: Item):
         if item.name in self.data["name"].values:
             raise ValueError(f"Item `{item.name}`already Exists. Try editing it...")
-        new_df = pd.DataFrame([item.csv_entry()])
-        new_df.to_csv(self.data_file, mode="a", index=False, header=False)
+        pd.DataFrame([item.csv_entry()]).to_csv(
+            self.data_file, mode="a", index=False, header=False
+        )
+        # Also update the in‑memory DataFrame so the current session sees the change
+        self.data = pd.concat(
+            [self.data, pd.DataFrame([item.csv_entry()])], ignore_index=True
+        )
 
     def del_item(self, item_name: str):
         self.data = self.data[self.data["name"] != item_name]  # type: ignore
@@ -156,7 +162,7 @@ class CSVBackend(BaseModel):
                 f"{item.price_str}",
                 f"{item.quantity}",
                 f"{item.quantity_unit}",
-                f"{item.expiry_date.strftime(conf["date_format"])}",
+                f"{item.expiry_date.strftime(conf['date_format'])}",
                 f"{item.expiry_duration}",
             )
         console.print(table)

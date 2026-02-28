@@ -1,145 +1,106 @@
-from typing import List
-import typer
-import questionary as qy
 import configparser
 from pathlib import Path
+
+import questionary as qy
+import typer
+from configs import DEFAULT_CONFIG_PATH, Settings
+from modules import CSVBackend, Item
 from rapidfuzz.process import extract
 from rich import print
 
-from configs import Settings, DEFAULT_CONFIG_PATH
-from modules import CSVBackend, Item
-
 app = typer.Typer(rich_markup_mode="rich", no_args_is_help=True)
-conf_parser = configparser.ConfigParser()
+
+
+def _backend() -> CSVBackend:
+    """Instantiate the backend according to the current config."""
+    cfg = Settings.from_config_file()
+    if cfg.backend != "CSV":
+        raise NotImplementedError(f"Backend {cfg.backend} not implemented yet.")
+    data_dir = Path(cfg.data_dir)
+    data_file = data_dir / "data.csv"
+    return CSVBackend.read_and_populate_data(data_dir, data_file)
 
 
 @app.command()
-def config():
-    """
-    Initialize `KInv` for some general configuration
-    """
-    init_answers = qy.form(
-        data_dir=qy.path(
-            "Enter your data path:",
-            default="~/.config/kinv",
-        ),
+def config() -> None:
+    """Interactively create/overwrite the kinv configuration file."""
+    answers = qy.form(
+        data_dir=qy.path("Enter your data path:", default="~/.config/kinv"),
         backend=qy.select(
             "Select your backend:",
             default="CSV",
             choices=["CSV", "YAML", "HUML", "SQLite"],
         ),
         currency_symbol=qy.select(
-            "Select your Currency symbol:",
-            default="₹",
-            choices=["₹", "$", "€", "¥"],
+            "Select your currency symbol:", default="₹", choices=["₹", "$", "€", "¥"]
         ),
         currency_after=qy.select(
-            "Select your Currency symbol:",
+            "Show currency *after* the amount?",
             default="false",
             choices=["true", "false"],
         ),
         date_format=qy.text("Date format you want to use:", default="d/m/Y"),
     ).ask()
 
-    conf_parser["CLI"] = {
-        "data_dir": init_answers["data_dir"],
-        "backend": init_answers["backend"],
-        "currency_symbol": init_answers["currency_symbol"],
-        "currency_after": init_answers["currency_after"],
-        "date_format": init_answers["date_format"],
-    }
+    parser = configparser.ConfigParser()
+    parser["CLI"] = answers
 
-    DEFAULT_CONFIG_PATH.parent.mkdir(exist_ok=True)
-    DEFAULT_CONFIG_PATH.touch()
-    with open(DEFAULT_CONFIG_PATH, "w") as conf_file:
-        flag: bool = qy.confirm(
-            "This will wipe the current config (if there any) and write new config to it."
-        ).ask()
-        if flag:
-            conf_parser.write(conf_file)
+    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(DEFAULT_CONFIG_PATH, "w") as fp:
+        if qy.confirm("This will overwrite the existing config. Continue?").ask():
+            parser.write(fp)
         else:
-            print("Nothing changed in your config or config not saved.")
+            print("[yellow]Config unchanged.[/yellow]")
 
 
 @app.command()
-def add():
-    """
-    Add item to the database.
-    """
+def add() -> None:
+    """Add a new inventory item."""
     item = Item.create_item_cli()
-    # print(item.model_dump())
-    # print(f"{item.expiry_duration} days")
-
-    conf = Settings.from_config_file().model_dump()
-    if conf["backend"] == "CSV":
-        csv_backend = CSVBackend.read_and_populate_data(
-            Path(conf["data_dir"]), Path(conf["data_dir"]).joinpath("data.csv")
-        )
-        csv_backend.new_entry(item)
+    backend = _backend()
+    backend.new_entry(item)
 
 
 @app.command()
-def list():
-    """
-    List table
-    """
-    conf = Settings.from_config_file().model_dump()
-    if conf["backend"] == "CSV":
-        csv_backend = CSVBackend.read_and_populate_data(
-            Path(conf["data_dir"]), Path(conf["data_dir"]).joinpath("data.csv")
-        )
-        csv_backend.list_all()
+def list() -> None:
+    """Show the entire inventory table."""
+    _backend().list_all()
 
 
 @app.command()
-def edit(item):
-    """
-    Edit an item.
-    """
-    conf = Settings.from_config_file().model_dump()
-    if conf["backend"] == "CSV":
-        csv_backend = CSVBackend.read_and_populate_data(
-            Path(conf["data_dir"]), Path(conf["data_dir"]).joinpath("data.csv")
-        )
-        df = csv_backend.data
-        edit_item = resolve_matches(
-            item, df["name"].to_list(), "Select the item to edit."
-        )
-        item_index = df[df["name"] == edit_item].index[0]
-        print(df.loc[item_index].to_dict())
-        new_item = Item.create_item_cli()
-        csv_backend.del_item(edit_item)
-        csv_backend.new_entry(new_item)
+def edit(
+    item: str = typer.Argument(..., help="Item name or fuzzy search term"),
+) -> None:
+    """Edit an existing item."""
+    backend = _backend()
+    df = backend.data
+    target = resolve_matches(item, df["name"].tolist(), "Select the item to edit.")
+    row_idx = df.loc[df["name"] == target].index[0]
 
-    print("[red] Database updated succesfully...[/red]")
+    print(df.loc[row_idx].to_dict())
+    new_item = Item.create_item_cli()
+    backend.del_item(target)
+    backend.new_entry(new_item)
+    print("[green]Database updated successfully.[/green]")
 
 
 @app.command()
-def rm(item):
-    """
-    Remove an item...
-    """
-    conf = Settings.from_config_file().model_dump()
-    if conf["backend"] == "CSV":
-        csv_backend = CSVBackend.read_and_populate_data(
-            Path(conf["data_dir"]), Path(conf["data_dir"]).joinpath("data.csv")
-        )
-        df = csv_backend.data
-        edit_item = resolve_matches(
-            item, df["name"].to_list(), "Select the item to edit."
-        )
-        csv_backend.del_item(edit_item)
-
-    print("[red] Item deleted succesfully...[/red]")
+def rm(item: str = typer.Argument(..., help="Item name or fuzzy search term")) -> None:
+    """Remove an item from the inventory."""
+    backend = _backend()
+    df = backend.data
+    target = resolve_matches(item, df["name"].tolist(), "Select the item to delete.")
+    backend.del_item(target)
+    print("[green]Item deleted successfully.[/green]")
 
 
 def resolve_matches(query: str, choices: List[str], message: str) -> str:
-    matches = [match[0] for match in extract(query, choices=choices, score_cutoff=50)]
-    if len(matches) != 1:
-        pick_match = qy.select(message, choices=matches).ask()  # type: ignore
-    else:
-        pick_match = matches[0]
-    return pick_match
+    matches = [m[0] for m in extract(query, choices=choices, score_cutoff=50)]
+    if not matches:
+        raise ValueError(f"No matches found for '{query}'.")
+    if len(matches) == 1:
+        return matches[0]
+    return qy.select(message, choices=matches).ask()  # type: ignore
 
 
 if __name__ == "__main__":

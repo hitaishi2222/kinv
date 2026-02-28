@@ -1,11 +1,10 @@
+import configparser
 import sys
 from pathlib import Path
 from typing import Literal
-from rich import print
 
 from pydantic import BaseModel, DirectoryPath
-
-import configparser
+from rich import print
 
 if sys.platform == "windows":
     DEFAULT_CONFIG_PATH = Path("~\\AppData\\Local\\kinv\\config.ini").expanduser()
@@ -24,24 +23,22 @@ class Settings(BaseModel):
     def from_config_file(cls, path: Path = DEFAULT_CONFIG_PATH) -> "Settings":
         if not path.exists():
             raise ValueError(f"config file is not found at : {path}. Run `kinv config`")
-        config = configparser.ConfigParser()
-        config.read(path)
-        opt = {section: dict(config.items(section)) for section in config.sections()}
+        parser = configparser.ConfigParser()
+        parser.read(path)
+        # opt = {section: dict(parser.items(section)) for section in parser.sections()}
 
-        cli = opt.get("CLI", None)
-        if not cli:
-            raise ValueError(
-                "Key [/bold red]'CLI'[/bold red] not found in config file!"
-            )
+        cli = parser["CLI"] if "CLI" in parser else None
+        if cli is None:
+            raise ValueError("Section [CLI] missing in config file!")
 
         # data_dir
-        data_dir = cli.get("data_dir", DEFAULT_CONFIG_PATH.parent)
+        data_dir = Path(
+            cli.get("data_dir", str(DEFAULT_CONFIG_PATH.parent))
+        ).expanduser()
 
-        # currency_symbol
+        # backend
         if cli.get("backend", "CSV") not in ["CSV", "YAML", "HUML", "SQLite"]:
-            raise ValueError(
-                "backend must be one of ['CSV', 'YAML', 'HUML', 'SQLite'] "
-            )
+            raise ValueError("backend must be one of ['CSV', 'YAML', 'HUML', 'SQLite']")
         else:
             backend = "CSV"
 
@@ -49,21 +46,17 @@ class Settings(BaseModel):
         sym: str = cli.get("currency_symbol", "₹")
 
         # currency_position (After: True, Before:False default) ex:[ 15$ or $15 ]
-        currency_after: bool = (
-            True if cli.get("currency_after", False) in ["True", "true"] else False
-        )
+        currency_after = cli.get("currency_after", "false").lower() == "true"
 
         # date format
-        def set_date_format(format: str) -> str:
+        def _expand_date(fmt: str) -> str:
+            # Convert shortcuts like d/m/Y → %d/%m/%Y
             result = ""
-            for char in format:
-                if char.isalpha():
-                    result += "%" + char
-                else:
-                    result += char
+            for ch in fmt:
+                result += f"%{ch}" if ch.isalpha() else ch
             return result
 
-        date_format: str = set_date_format(cli.get("date_format", "d/m/Y"))
+        date_format = _expand_date(cli.get("date_format", "d/m/Y"))
 
         return cls(
             data_dir=Path(data_dir).expanduser(),
