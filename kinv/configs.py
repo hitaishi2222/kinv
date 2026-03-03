@@ -37,10 +37,10 @@ class Settings(BaseModel):
         ).expanduser()
 
         # backend
-        if cli.get("backend", "CSV") not in ["CSV", "YAML", "HUML", "SQLite"]:
-            raise ValueError("backend must be one of ['CSV', 'YAML', 'HUML', 'SQLite']")
+        if cli["backend"] in ["CSV", "YAML", "HUML", "SQLite"]:
+            backend = cli.get("backend", "CSV")
         else:
-            backend = "CSV"
+            raise ValueError("backend must be one of ['CSV', 'YAML', 'HUML', 'SQLite']")
 
         # currency_symbol
         sym: str = cli.get("currency_symbol", "₹")

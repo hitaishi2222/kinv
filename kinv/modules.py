@@ -3,8 +3,9 @@ from typing import Dict, List, Literal
 
 import pandas as pd
 import questionary as qy
-from configs import Settings
-from pydantic import BaseModel, ConfigDict, DirectoryPath, FilePath
+import sqlite3
+from kinv.configs import Settings
+from pydantic import BaseModel, ConfigDict, DirectoryPath, FilePath, PrivateAttr
 from rich.console import Console
 from rich.table import Table
 
@@ -166,3 +167,110 @@ class CSVBackend(BaseModel):
                 f"{item.expiry_duration}",
             )
         console.print(table)
+
+
+class SQLiteBackend(BaseModel):
+    data_file: FilePath
+    _conn: sqlite3.Connection = PrivateAttr()
+
+    def model_post_init(self, __context):
+        self._conn = sqlite3.connect(self.data_file)
+        self._conn.row_factory = sqlite3.Row
+        self._create_table()
+
+    @property
+    def conn(self):
+        return self._conn
+
+    def _create_table(self):
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                price REAL,
+                quantity REAL,
+                quantity_unit TEXT,
+                expiry_date TEXT,
+                expiry_duration INTEGER
+            )
+        """)
+        self._conn.commit()
+
+    def item_list(self) -> list[Item]:
+        rows = self.conn.execute("SELECT * FROM items").fetchall()
+
+        items = []
+        for row in rows:
+            data = dict(row)
+
+            # convert ISO string → datetime
+            data["expiry_date"] = datetime.fromisoformat(data["expiry_date"])
+
+            items.append(Item(**data))
+
+        return items
+
+    def new_entry(self, item: Item):
+        data = item.model_dump()
+
+        # convert datetime to ISO string
+        data["expiry_date"] = data["expiry_date"].isoformat()
+
+        self.conn.execute(
+            """
+            INSERT INTO items
+            (name, price, quantity, quantity_unit, expiry_date, expiry_duration)
+            VALUES (:name, :price, :quantity, :quantity_unit, :expiry_date, :expiry_duration)
+            """,
+            data,
+        )
+        self.conn.commit()
+
+    def del_item(self, item_name: str):
+        self.conn.execute(
+            "DELETE FROM items WHERE name = ?",
+            (item_name,),
+        )
+        self.conn.commit()
+
+    def list_all(self):
+        conf = Settings.from_config_file().model_dump()
+
+        table = Table(title="Kitchen Inventory")
+        table.add_column("name", justify="left", style="cyan")
+        table.add_column("price", justify="right")
+        table.add_column("quantity", justify="right", style="red")
+        table.add_column("unit", justify="right", style="red")
+        table.add_column("expiry date", justify="right", style="blue")
+        table.add_column("expiry in", justify="right", style="blue")
+
+        for item in self.item_list():
+            table.add_row(
+                f"{item.name}",
+                f"{item.price_str}",
+                f"{item.quantity}",
+                f"{item.quantity_unit}",
+                f"{item.expiry_date.strftime(conf['date_format'])}",
+                f"{item.expiry_duration}",
+            )
+        console.print(table)
+
+    def edit_item(self, name: str):
+        data = Item.create_item_cli().model_dump()
+        data["expiry_date"] = data["expiry_date"].isoformat()
+        data["search_name"] = name
+
+        self.conn.execute(
+            """
+            UPDATE items
+            SET name = :name,
+                price = :price,
+                quantity = :quantity,
+                quantity_unit = :quantity_unit,
+                expiry_date = :expiry_date,
+                expiry_duration = :expiry_duration
+            WHERE name = :search_name
+            """,
+            data,
+        )
+        self.conn.commit()

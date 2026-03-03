@@ -1,24 +1,30 @@
 import configparser
 from pathlib import Path
+from typing import List
 
 import questionary as qy
 import typer
-from configs import DEFAULT_CONFIG_PATH, Settings
-from modules import CSVBackend, Item
+from kinv.configs import DEFAULT_CONFIG_PATH, Settings
+from kinv.modules import CSVBackend, Item, SQLiteBackend
 from rapidfuzz.process import extract
 from rich import print
 
 app = typer.Typer(rich_markup_mode="rich", no_args_is_help=True)
 
 
-def _backend() -> CSVBackend:
+def _backend():
     """Instantiate the backend according to the current config."""
     cfg = Settings.from_config_file()
-    if cfg.backend != "CSV":
-        raise NotImplementedError(f"Backend {cfg.backend} not implemented yet.")
     data_dir = Path(cfg.data_dir)
-    data_file = data_dir / "data.csv"
-    return CSVBackend.read_and_populate_data(data_dir, data_file)
+    if cfg.backend == "CSV":
+        data_file = data_dir / "data.csv"
+        return CSVBackend.read_and_populate_data(data_dir, data_file)
+    elif cfg.backend == "SQLite":
+        data_file = data_dir / "data.db"
+        data_file.touch()
+        return SQLiteBackend(data_file=data_file)
+    else:
+        raise NotImplementedError(f"Backend {cfg.backend} not implemented yet.")
 
 
 @app.command()
@@ -73,25 +79,53 @@ def edit(
 ) -> None:
     """Edit an existing item."""
     backend = _backend()
-    df = backend.data
-    target = resolve_matches(item, df["name"].tolist(), "Select the item to edit.")
-    row_idx = df.loc[df["name"] == target].index[0]
+    if isinstance(backend, CSVBackend):
+        df = backend.data
+        target = resolve_matches(item, df["name"].tolist(), "Select the item to edit.")
+        row_idx = df.loc[df["name"] == target].index[0]
 
-    print(df.loc[row_idx].to_dict())
-    new_item = Item.create_item_cli()
-    backend.del_item(target)
-    backend.new_entry(new_item)
-    print("[green]Database updated successfully.[/green]")
+        print(df.loc[row_idx].to_dict())
+        new_item = Item.create_item_cli()
+        backend.del_item(target)
+        backend.new_entry(new_item)
+        print("[green]Database updated successfully.[/green]")
+
+    if isinstance(backend, SQLiteBackend):
+        conn = backend.conn
+        cursor = conn.cursor()
+
+        names_list = [
+            names[0] for names in cursor.execute("SELECT name FROM items").fetchall()
+        ]
+        target = resolve_matches(item, names_list, "Select the item to edit.")
+        item_info = conn.execute(
+            f"SELECT * FROM items WHERE name = '{target}'"
+        ).fetchone()
+        print(dict(item_info))
+        backend.edit_item(name=target)
 
 
 @app.command()
 def rm(item: str = typer.Argument(..., help="Item name or fuzzy search term")) -> None:
     """Remove an item from the inventory."""
     backend = _backend()
-    df = backend.data
-    target = resolve_matches(item, df["name"].tolist(), "Select the item to delete.")
-    backend.del_item(target)
-    print("[green]Item deleted successfully.[/green]")
+    if isinstance(backend, CSVBackend):
+        df = backend.data
+        target = resolve_matches(
+            item, df["name"].tolist(), "Select the item to delete."
+        )
+        backend.del_item(target)
+        print("[green]Item deleted successfully.[/green]")
+
+    if isinstance(backend, SQLiteBackend):
+        conn = backend.conn
+        cursor = conn.cursor()
+
+        names_list = [
+            names[0] for names in cursor.execute("SELECT name FROM items").fetchall()
+        ]
+        target = resolve_matches(item, names_list, "Select the item to edit.")
+        backend.del_item(target)
 
 
 def resolve_matches(query: str, choices: List[str], message: str) -> str:
@@ -103,5 +137,9 @@ def resolve_matches(query: str, choices: List[str], message: str) -> str:
     return qy.select(message, choices=matches).ask()  # type: ignore
 
 
-if __name__ == "__main__":
+def main():
     app()
+
+
+if __name__ == "__main__":
+    main()
