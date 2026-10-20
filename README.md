@@ -9,3 +9,7 @@ I didn't find any specific or general inventory management system simple enough 
 ### Is this app vibe-coded?
 
 Definitely not.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
